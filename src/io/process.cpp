@@ -2,6 +2,10 @@
 #include <csignal> // NOLINT
 #include <utility>
 
+#ifdef Q_OS_LINUX
+#include <sys/prctl.h>
+#endif
+
 #include <qdir.h>
 #include <qhash.h>
 #include <qlist.h>
@@ -213,6 +217,17 @@ void Process::startProcessIfReady() {
 	if (!this->mStdinEnabled) this->process->closeWriteChannel();
 
 	this->setupEnvironment(this->process);
+#ifdef Q_OS_LINUX
+	// Die with the parent: if quickshell exits abnormally (SIGKILL, crash),
+	// ~Process() never runs and managed children would be reparented to init
+	// and linger (wl-paste watchers, niri event-stream, nmcli monitor, udevadm).
+	// PR_SET_PDEATHSIG makes the kernel deliver SIGKILL to the child the moment
+	// the quickshell process dies, closing that orphan path regardless of how
+	// the parent terminates.
+	this->process->setChildProcessModifier([] {
+		prctl(PR_SET_PDEATHSIG, SIGKILL);
+	});
+#endif
 	this->process->start(cmd, args);
 }
 
