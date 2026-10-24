@@ -1,0 +1,72 @@
+name: Sync Upstream
+
+# 定时 + 手动触发：拉上游 master，基线逐条 cherry-pick 保持线性，
+# 失败时开 issue 报告（不推送半同步状态）。
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure bot identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run sync script
+        id: sync
+        run: |
+          head_before=$(git rev-parse HEAD)
+          echo "head_before=$head_before" >> "$GITHUB_OUTPUT"
+          set +e
+          out=$(scripts/sync-upstream.sh 2>&1)
+          status=$?
+          set -e
+          echo "$out"
+          if [ "$status" -ne 0 ]; then
+            echo "sync_output<<SYNC_EOF" >> "$GITHUB_ENV"
+            echo "$out" >> "$GITHUB_ENV"
+            echo "SYNC_EOF" >> "$GITHUB_ENV"
+            exit 1
+          fi
+          head_after=$(git rev-parse HEAD)
+          if [ "$head_before" != "$head_after" ]; then
+            echo "synced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push (fast-forward only)
+        if: steps.sync.outputs.synced == 'true'
+        run: git push origin master
+
+      - name: Open issue on failure
+        if: failure() && steps.sync.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = process.env.sync_output || '无输出';
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Sync Upstream 失败：${new Date().toISOString().slice(0, 10)}`,
+              body: `自动同步上游失败，已回滚，无半同步状态。请人工处理。\n\n\`\`\`\n${output.slice(-3000)}\n\`\`\`\n`,
+              labels: ['sync-failure'],
+            });
