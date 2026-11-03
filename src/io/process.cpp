@@ -227,10 +227,11 @@ void Process::startProcessIfReady() {
 	// include-cleaner maps PR_SET_PDEATHSIG/SIGKILL to the kernel/glibc C
 	// headers (linux/prctl.h, signal.h) rather than the <sys/prctl.h> and
 	// <csignal> includes above — same duality the csignal NOLINT works
-	// around.
-	this->process->setChildProcessModifier([] {
-		prctl(PR_SET_PDEATHSIG, SIGKILL);
-	}); // NOLINT(misc-include-cleaner)
+	// around. BEGIN/END rather than a trailing tag: clang-format wraps the
+	// call and the tag would end up on another line than the symbols.
+	// NOLINTBEGIN(misc-include-cleaner)
+	this->process->setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGKILL); });
+	// NOLINTEND(misc-include-cleaner)
 #endif
 	this->process->start(cmd, args);
 }
