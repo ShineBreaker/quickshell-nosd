@@ -10,6 +10,10 @@
 #include <qtenvironmentvariables.h>
 #include <unistd.h>
 
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+
 #include "../core/instanceinfo.hpp"
 #include "../core/logging.hpp"
 #include "../core/paths.hpp"
@@ -23,6 +27,33 @@
 namespace qs::launch {
 
 namespace {
+
+#ifdef __GLIBC__
+
+// Allocator defaults for a shell process: dozens of threads alive for days.
+// Glibc's per-thread arenas strand freed pages of transient allocations
+// (wallpaper-sized image decodes) in RSS and swap for the process lifetime;
+// a shell that ran two days was observed at 620 MB RSS plus 890 MB swap.
+// Capping arenas and pinning the mmap/trim thresholds sends large ranges
+// straight back to the kernel instead.
+//
+// Explicit configuration wins: glibc consumes MALLOC_* from the environment
+// at process startup (nosDshell's launcher script sets the same values), so
+// any of them being present means the user already chose.
+void configureGlibcAllocator() {
+	if (qEnvironmentVariableIsSet("MALLOC_ARENA_MAX")
+	    || qEnvironmentVariableIsSet("MALLOC_MMAP_THRESHOLD_")
+	    || qEnvironmentVariableIsSet("MALLOC_TRIM_THRESHOLD_"))
+	{
+		return;
+	}
+
+	mallopt(M_ARENA_MAX, 4);
+	mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+	mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+}
+
+#endif
 
 void checkCrashRelaunch(char** argv) {
 #if CRASH_HANDLER
@@ -118,6 +149,10 @@ void exitDaemon(int code) {
 
 int main(int argc, char** argv) {
 	QCoreApplication::setApplicationName("quickshell");
+
+#ifdef __GLIBC__
+	configureGlibcAllocator();
+#endif
 
 #if CRASH_HANDLER
 	qsCheckCrash(argc, argv);

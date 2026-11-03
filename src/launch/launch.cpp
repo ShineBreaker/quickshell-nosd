@@ -15,7 +15,12 @@
 #include <qstring.h>
 #include <qtenvironmentvariables.h>
 #include <qtextstream.h>
+#include <qtimer.h>
 #include <unistd.h>
+
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 
 #include "../core/common.hpp"
 #include "../core/instanceinfo.hpp"
@@ -320,6 +325,18 @@ int launch(const LaunchArgs& args, char** argv) {
 	QGuiApplication::setQuitOnLastWindowClosed(false);
 
 	exitDaemon(0);
+
+#ifdef __GLIBC__
+	// The arena/trim thresholds set in main() return large freed ranges
+	// immediately, but small chunks freed mid-arena can still pin whole
+	// pages. Walk all arenas every few minutes and release what is free at
+	// the top; the walk is on the order of a millisecond for our arena
+	// count. Runs on the shell process' main loop, after the launch parent
+	// has exited via exitDaemon() above.
+	QTimer mallocTrimTimer;
+	QObject::connect(&mallocTrimTimer, &QTimer::timeout, []() { malloc_trim(0); });
+	mallocTrimTimer.start(5 * 60 * 1000);
+#endif
 
 	auto code = QGuiApplication::exec();
 	delete app;
