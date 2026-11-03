@@ -19,12 +19,6 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
         with:
-          # No FlakeHub token on this fork: with the integration enabled every
-          # narinfo fetch 401s and falls back to the GitHub cache API, which
-          # rate-limited the whole matrix on 2026-10-24 (the red Build/Lint
-          # runs on e64070f). Mirrors lint.yml.
-          use-flakehub: false
-        with:
           use-flakehub: false
 
       - name: Download Dependencies
