@@ -224,9 +224,7 @@ void Process::startProcessIfReady() {
 	// PR_SET_PDEATHSIG makes the kernel deliver SIGKILL to the child the moment
 	// the quickshell process dies, closing that orphan path regardless of how
 	// the parent terminates.
-	this->process->setChildProcessModifier([] {
-		prctl(PR_SET_PDEATHSIG, SIGKILL);
-	});
+	this->process->setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGKILL); });
 #endif
 	this->process->start(cmd, args);
 }
