@@ -4,6 +4,7 @@
 #include <qpointer.h>
 #include <qtmetamacros.h>
 
+#include "node.hpp"
 #include "registry.hpp"
 
 namespace qs::service::pipewire {
