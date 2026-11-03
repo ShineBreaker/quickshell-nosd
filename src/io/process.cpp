@@ -224,7 +224,13 @@ void Process::startProcessIfReady() {
 	// PR_SET_PDEATHSIG makes the kernel deliver SIGKILL to the child the moment
 	// the quickshell process dies, closing that orphan path regardless of how
 	// the parent terminates.
-	this->process->setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGKILL); });
+	// include-cleaner maps PR_SET_PDEATHSIG/SIGKILL to the kernel/glibc C
+	// headers (linux/prctl.h, signal.h) rather than the <sys/prctl.h> and
+	// <csignal> includes above — same duality the csignal NOLINT works
+	// around.
+	this->process->setChildProcessModifier([] {
+		prctl(PR_SET_PDEATHSIG, SIGKILL);
+	}); // NOLINT(misc-include-cleaner)
 #endif
 	this->process->start(cmd, args);
 }

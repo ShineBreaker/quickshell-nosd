@@ -48,9 +48,11 @@ void configureGlibcAllocator() {
 		return;
 	}
 
-	mallopt(M_ARENA_MAX, 4);
-	mallopt(M_MMAP_THRESHOLD, 128 * 1024);
-	mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+	// Runs before any thread exists, so the mt-unsafe mallopt is safe here;
+	// clang-tidy cannot see the ordering.
+	mallopt(M_ARENA_MAX, 4);               // NOLINT(concurrency-mt-unsafe)
+	mallopt(M_MMAP_THRESHOLD, 128 * 1024); // NOLINT(concurrency-mt-unsafe)
+	mallopt(M_TRIM_THRESHOLD, 128 * 1024); // NOLINT(concurrency-mt-unsafe)
 }
 
 #endif

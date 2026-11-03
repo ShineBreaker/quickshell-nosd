@@ -9,6 +9,7 @@
 #include <qlist.h>
 #include <qlogging.h>
 #include <qnamespace.h>
+#include <qobject.h>
 #include <qprocess.h>
 #include <qqmldebug.h>
 #include <qquickwindow.h>
