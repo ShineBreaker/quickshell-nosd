@@ -2,6 +2,8 @@ name: Sync Upstream
 
 # 定时 + 手动触发：拉上游 master，基线逐条 cherry-pick 保持线性，
 # 失败时开 issue 报告（不推送半同步状态）。
+# 本 job 任一失败（检出、同步、推送）都会报告；已有未关闭的 sync-failure
+# issue 时只追加评论。推送和建 issue 优先用 UPSTREAM_SYNC_TOKEN。
 on:
   schedule:
     - cron: "0 5 * * *"
@@ -20,12 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        id: checkout
         with:
           ref: master
           fetch-depth: 0
           persist-credentials: true
+          # PAT（repo + workflow）才能推送 .github/workflows/ 的改动；未配置则用 GITHUB_TOKEN。
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
 
       - name: Configure bot identity
+        id: identity
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -40,10 +46,15 @@ jobs:
           status=$?
           set -e
           echo "$out"
+          echo "sync_status=${status}" >> "$GITHUB_ENV"
+          # 成功或失败都留下摘录，推送失败时 issue 也能带上脚本输出。
+          excerpt=$(printf '%s\n' "$out" | sed 's/SYNC_OUTPUT_EOF/SYNC_OUTPUT_EOF_/g' | tail -c 3000)
+          {
+            echo "sync_output<<SYNC_OUTPUT_EOF"
+            printf '%s\n' "$excerpt"
+            echo "SYNC_OUTPUT_EOF"
+          } >> "$GITHUB_ENV"
           if [ "$status" -ne 0 ]; then
-            echo "sync_output<<SYNC_EOF" >> "$GITHUB_ENV"
-            echo "$out" >> "$GITHUB_ENV"
-            echo "SYNC_EOF" >> "$GITHUB_ENV"
             exit 1
           fi
           head_after=$(git rev-parse HEAD)
@@ -53,20 +64,129 @@ jobs:
             echo "synced=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # 凭证来自 checkout 的 token（UPSTREAM_SYNC_TOKEN 或 GITHUB_TOKEN）。
       - name: Push (fast-forward only)
+        id: push
         if: steps.sync.outputs.synced == 'true'
-        run: git push origin master
+        run: git push --ff-only origin master
 
       - name: Open issue on failure
-        if: failure() && steps.sync.outcome == 'failure'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const output = process.env.sync_output || '无输出';
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Sync Upstream 失败：${new Date().toISOString().slice(0, 10)}`,
-              body: `自动同步上游失败，已回滚，无半同步状态。请人工处理。\n\n\`\`\`\n${output.slice(-3000)}\n\`\`\`\n`,
-              labels: ['sync-failure'],
-            });
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
+          SYNC_OUTCOME: ${{ steps.sync.outcome }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+        run: |
+          set -euo pipefail
+
+          repo="${GITHUB_REPOSITORY:?}"
+          label="sync-failure"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          when_utc="$(date -u '+%F %H:%M UTC')"
+          title="上游同步失败：$(date -u +%F)"
+          upstream_repo="quickshell-mirror/quickshell"
+          upstream_branch="master"
+
+          # 标签不存在就创建；创建失败不阻断，后面改为不带标签建 issue。
+          gh label create "$label" \
+            --repo "$repo" \
+            --color d73a4a \
+            --description "上游自动同步失败，需要人工处理" \
+            --force || true
+
+          existing=""
+          if ! existing="$(gh issue list --repo "$repo" --state open --label "$label" --limit 1 --json number --jq '.[0].number // empty')"; then
+            echo "::warning::查询已有 ${label} issue 失败，改为尝试新建"
+            existing=""
+          fi
+
+          outcome_zh() {
+            case "${1:-}" in
+              success) printf '成功' ;;
+              failure) printf '失败' ;;
+              skipped) printf '跳过' ;;
+              cancelled) printf '取消' ;;
+              "") printf '未执行' ;;
+              *) printf '%s' "$1" ;;
+            esac
+          }
+
+          conflict_lines="$(printf '%s\n' "${sync_output:-}" | grep -E '^CONFLICT ' || true)"
+          if [ -z "$conflict_lines" ]; then
+            conflict_text="（日志中未发现冲突文件）"
+          else
+            conflict_text="$conflict_lines"
+          fi
+
+          if [ -n "${sync_output:-}" ]; then
+            log_text="$(printf '%s\n' "$sync_output" | tail -c 3000)"
+          else
+            log_text="（无同步脚本输出：失败发生在脚本之前，或输出未能保留）"
+          fi
+
+          fence='```'
+          if printf '%s\n' "$log_text" | grep -q '```'; then
+            fence='~~~~'
+          fi
+
+          body_file="$(mktemp)"
+          {
+            printf '%s\n' "自动同步上游失败（${when_utc}）。同步脚本出错时会回滚到运行前的 HEAD，不会推送半同步状态。"
+            printf '%s\n' ""
+            printf '%s\n' "## 失败情况"
+            printf '%s\n' "- 检出（checkout）：$(outcome_zh "${CHECKOUT_OUTCOME:-}")"
+            printf '%s\n' "- 配置身份：$(outcome_zh "${IDENTITY_OUTCOME:-}")"
+            printf '%s\n' "- 同步脚本（scripts/sync-upstream.sh）：$(outcome_zh "${SYNC_OUTCOME:-}")，退出码 ${sync_status:-未知}"
+            printf '%s\n' "- 推送 master：$(outcome_zh "${PUSH_OUTCOME:-}")"
+            printf '%s\n' ""
+            printf '%s\n' "## 运行记录"
+            printf '%s\n' "$run_url"
+            printf '%s\n' ""
+            printf '%s\n' "## 上游"
+            printf '%s\n' "- 仓库：\`${upstream_repo}\`"
+            printf '%s\n' "- 分支：\`${upstream_branch}\`"
+            printf '%s\n' "- 本仓库分支：\`master\`"
+            printf '%s\n' "- 方式：按 \`.github/upstream-sync-base\` 逐条 cherry-pick（见 \`scripts/sync-upstream.sh\`）"
+            printf '%s\n' ""
+            printf '%s\n' "## 冲突文件"
+            printf '%s\n' "$conflict_text"
+            printf '%s\n' ""
+            printf '%s\n' "## 日志摘录"
+            printf '%s\n' "$fence"
+            printf '%s\n' "$log_text"
+            printf '%s\n' "$fence"
+            printf '%s\n' ""
+            printf '%s\n' "## 本地修复"
+            printf '%s\n' '```bash'
+            printf '%s\n' "git fetch origin"
+            printf '%s\n' "git checkout master"
+            printf '%s\n' "git pull --ff-only origin master"
+            printf '%s\n' "git remote add upstream https://github.com/${upstream_repo}.git 2>/dev/null || git remote set-url upstream https://github.com/${upstream_repo}.git"
+            printf '%s\n' "git fetch upstream ${upstream_branch}"
+            printf '%s\n' "DRY_RUN=1 scripts/sync-upstream.sh"
+            printf '%s\n' "scripts/sync-upstream.sh"
+            printf '%s\n' "git push origin master"
+            printf '%s\n' '```'
+            printf '%s\n' ""
+            printf '%s\n' "若脚本在某条提交上报冲突并回滚：对该上游提交手动 \`git cherry-pick\`，解决冲突后提交，把 \`.github/upstream-sync-base\` 更新为本次 \`upstream/${upstream_branch}\` 的完整 SHA，再推送 \`master\`。"
+            printf '%s\n' ""
+            printf '%s\n' "## 若推送因 workflow 文件被拒绝"
+            printf '%s\n' "默认 \`GITHUB_TOKEN\` 不能推送对 \`.github/workflows/\` 的修改（没有 \`workflows\` 权限时 GitHub 会拒绝）。请在仓库 Secrets 中添加 \`UPSTREAM_SYNC_TOKEN\`（PAT，需要 repo 与 workflow 权限）。本工作流会优先使用它来推送和创建 issue。"
+          } > "$body_file"
+
+          if [ -n "$existing" ]; then
+            if ! gh issue comment "$existing" --repo "$repo" --body-file "$body_file"; then
+              echo "::error::无法在已有 issue #${existing} 上评论，本次失败没有记入 issue"
+              exit 1
+            fi
+          else
+            if ! gh issue create --repo "$repo" --title "$title" --body-file "$body_file" --label "$label"; then
+              echo "::warning::带标签创建 issue 失败，改为不带标签重试"
+              if ! gh issue create --repo "$repo" --title "$title" --body-file "$body_file"; then
+                echo "::error::无法创建同步失败 issue（Issues 可能未开启，或 token 无权限）"
+                exit 1
+              fi
+            fi
+          fi
