@@ -18,6 +18,10 @@ if (SERVICE_POLKIT)
 	add_subdirectory(polkit)
 endif()
 
+if (SERVICE_KEYRING_PROMPTER)
+	add_subdirectory(keyringprompter)
+endif()
+
 if (SERVICE_GREETD)
 	add_subdirectory(greetd)
 endif()

@@ -198,6 +198,16 @@ To disable: `-DSERVICE_POLKIT=OFF`
 
 Dependencies: `polkit`, `glib`
 
+### Keyring Prompter
+This feature serves `org.gnome.keyring.SystemPrompter`, the dialog side of
+libsecret/oo7 keyring unlocks, on top of libgcr's `GcrSystemPrompter`. gcr 4
+still ships the interface and the D-Bus service but no longer installs gcr 3's
+`gcr-prompter` binary.
+
+To disable: `-DSERVICE_KEYRING_PROMPTER=OFF`
+
+Dependencies: `gcr-4`, `glib`
+
 ### Hyprland
 This feature enables hyprland specific integrations. It requires wayland support
 but has no extra dependencies.
